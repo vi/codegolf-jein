@@ -1,0 +1,106 @@
+#!/bin/bash
+
+# Simple sandbox script for Linux; Created by Vitaly "_Vi" Shukela in 2014; License=MIT
+
+# Settings
+STORAGE_LIMIT=$((900*1024*1024))
+JAILDIR="/tmp/codegolf"
+USER=codegolf
+THREADLIMIT=50
+MEMORY_LIMIT=$((1000*1024*1024))
+MAXCPUSECONDS=10
+
+# Check cmdline arguments
+if [[ -z "$1" || "$1" == "--help" ]]; then 
+    echo "Run a command in sandbox"
+    echo "Usage: sandbox cmdline"
+    exit 1
+fi
+
+# Check prereqs
+if grep  -q "^$USER:" /etc/passwd; then :; else   echo "User $USER not found";  exit 1; fi
+if [[ -x $(which dived) ]]; then :; else echo "Program 'dived' not found"; echo "https://github.com/vi/dive"; exit 1; fi
+if [[ -x $(which limit_syscalls) ]]; then :; else echo "Program 'limit_syscalls' not found"; echo "https://github.com/vi/syscall_limiter"; exit 1; fi
+if [[ -x $(which bindfs) ]]; then :; else echo "Program 'bindfs' not found"; exit 1; fi
+export PERL=$(which perl)
+
+CGROUPDIR=$(cat /proc/mounts | grep ^cgroup | awk '{print $2}')
+if [[ -z "$CGROUPDIR" ]]; then echo "Cgroups are not mounted. Do 'mount -t cgroup cgroup /some/path' first"; exit 1; fi
+
+MYCG="$CGROUPDIR"/"$USER"
+
+# Create a cgroup, limit memory for it and save up the fd for adding processes there
+mkdir -p "$MYCG"
+cat "$CGROUPDIR"/cpuset.cpus > "$MYCG"/cpuset.cpus 2> /dev/null
+cat "$CGROUPDIR"/cpuset.mems > "$MYCG"/cpuset.mems 2> /dev/null
+echo $MEMORY_LIMIT > "$MYCG"/memory.limit_in_bytes
+echo 10240000 > "$MYCG"/memory.kmem.limit_in_bytes
+echo $MEMORY_LIMIT > "$MYCG"/memory.memsw.limit_in_bytes
+echo 0 > "$MYCG"/cpuacct.usage
+exec 10>  "$MYCG"/tasks
+
+# Save command line to one string
+SERIALIZED_CMDLINE=$($PERL -e 'use MIME::Base64; map {print encode_base64($_,"")."_" } @ARGV;' "$@")
+DESERIALIZE_SCRIPT='$PERL -e "use MIME::Base64; my @A = map {decode_base64(\$_)} split \"_\", shift @ARGV; exec @A"'
+
+# Setup cleanuper at exit
+trap "pkill -9 -u $USER" EXIT
+
+# Setup cpu usage-based killer
+( sleep 2;
+    while true; do
+        if [[ "$(wc -l < "$MYCG"/tasks)" = "0" ]]; then break; fi
+        CURRENT_CPU_SECONDS=$(($(<"$MYCG"/cpuacct.usage)/1000/1000/1000))
+        if [[ $CURRENT_CPU_SECONDS -gt $MAXCPUSECONDS ]]; then
+            echo "CPU time exceed" >&2
+            pkill -9 -u $USER
+            break;
+        fi
+        sleep 1;
+    done
+)&
+
+# Create container and execute bash script in it
+dived -J -S -T -P    --unshare pid,fs,net,ipc,uts -- /bin/bash -c "$(cat << EOF
+    set -e
+    
+    # Remove all mounts except of selected
+    MOUNTS="\$(awk '{print \$2}'  /proc/mounts | sort -rV)"
+    for i in \$MOUNTS; do
+        if [[ \$i != / && \$i != /home && \$i != /boot && \$i != /tmp && \$i != /proc ]]; then
+            umount -n -l "\$i"
+        fi
+    done
+    
+    # Set up chroot with /proc, capacity-limited /tmp and read-only copy of host
+    mkdir -p "$JAILDIR"
+    bindfs -o dev -r / "$JAILDIR"
+    mount -t proc proc "$JAILDIR"/proc
+    mount -t tmpfs -o size=$STORAGE_LIMIT tmp "$JAILDIR"/tmp
+    mount --bind "$JAILDIR"/tmp "$JAILDIR"/var/run
+    cd "$JAILDIR"/tmp
+    
+    # From now on, turn on the memory limit
+    echo \$\$ >&10
+    exec 10>&-
+    
+    # Start the command line with limitations applied
+    HOME=/tmp USER=$USER LIMIT_SYSCALLS_DEFAULT_ACTION=a \
+        exec dived -J -S -T \
+        -X \
+        -l nproc=$THREADLIMIT \
+        -u $USER  \
+        -R  "$JAILDIR" \
+        -- \
+        limit_syscalls \
+            ptrace,e1 \
+            vm86,e1  \
+            vm86old,e1 \
+            get_kernel_syms,e1 \
+            query_module,e1 \
+            nfsservctl,e1 \
+            sendfile,e1 \
+        --  \
+        $DESERIALIZE_SCRIPT $SERIALIZED_CMDLINE
+EOF
+)"
