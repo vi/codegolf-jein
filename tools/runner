@@ -1,0 +1,59 @@
+#!/bin/bash
+
+PROG="$1"
+DIR="$2"
+KEY="$3"
+
+if [[ ( ! -x "$PROG" ) || ( ! -e "$KEY" ) ]]; then
+    echo "Usage: tools/runner solution_program examination_samples_directory exampination_key"
+    echo "Example: tools/runner solutions/example train train/key"
+    echo "    solution_program is started without arguments and is expected to read "
+    echo "    and analyze train/yes%d.wav and train/no%d.wav files, then read each inputs/%d.wav"
+    echo "    and output 'yes' or 'no' for each guess."
+    exit 1
+fi
+
+if [[ -e inputs ]]; then
+    echo '"inputs" exists. Previous runner instance has not properly terminated?'
+    exit 1
+fi
+
+if [[ ! -d train ]]; then
+    echo 'No "train" directory found.'
+    exit 1
+fi
+
+
+ln -s "$DIR" inputs
+"$PROG" > output.txt
+rm inputs
+
+readarray -t K < "$KEY"
+readarray -t O < output.txt
+
+TOTAL_SCORE=0
+CURRENT_SCORE=0
+
+for((i=0; ; ++i )) {
+    IFS=" " read FN EXPECTED ORIGINAL <<< "${K[i]}"
+    ANSWER="${O[i]}"
+    if [[ -z "$EXPECTED" ]]; then break; fi
+    TOTAL_SCORE=$((TOTAL_SCORE + 10))
+    if [[ "$ANSWER" == "yes" || "$ANSWER" == "no" ]]; then
+        if [[ "$ANSWER" == "$EXPECTED" ]]; then
+            CURRENT_SCORE=$((CURRENT_SCORE + 10))
+        fi
+    else
+        CURRENT_SCORE=$((CURRENT_SCORE + 5))
+    fi
+}
+
+echo "Accuracy: $((CURRENT_SCORE * 1000 / TOTAL_SCORE)) ‰"
+
+
+# -u 10  # limit processes
+#ulimit -i 10  -q 81920 -t $CPU_TIME_LIMIT -x 10 -v $MEMORY_LIMIT -n 16 
+
+#tools/sandbox factor 23547523362792529
+#23547523362792529: 153452023 153452023
+#Resulting CPU usage: 0.370344
