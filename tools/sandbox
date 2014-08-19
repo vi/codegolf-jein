@@ -104,3 +104,5 @@ dived -J -S -T -P    --unshare pid,fs,net,ipc,uts -- /bin/bash -c "$(cat << EOF
         $DESERIALIZE_SCRIPT $SERIALIZED_CMDLINE
 EOF
 )"
+
+printf "Resulting CPU usage: %f\n" $(bc -l <<< $(<"$MYCG"/cpuacct.usage)/1000/1000/1000) >&2
