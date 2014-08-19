@@ -1,0 +1,8 @@
+solutions/example
+*.o
+*.wav
+tools/splitter
+*.hi
+output.txt
+inputs
+examination/key
